@@ -1,0 +1,30 @@
+{
+  "name": "ts_hsm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Class-based same-instance synchronous reentrant hierarchical state machine for TypeScript",
+  "license": "UNLICENSED",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "example:hsmtst": "tsc -p tsconfig.examples.json && node example-dist/examples/hsmtst.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
