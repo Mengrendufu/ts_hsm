@@ -842,4 +842,63 @@ describe("reentrant runtime semantics", () => {
       "chain-3.chain-2.chain-1.chain-0.status-handled.status-handled.status-handled.",
     );
   });
+
+  it("rejects init targets that are not descendants of the current composite", () => {
+    type Event = { readonly type: "NOP" };
+
+    class TopState extends HsmState<Event, BadInitMachine> {
+      public constructor() {
+        super("top", null);
+      }
+
+      public override init(machine: BadInitMachine): HsmState<Event, BadInitMachine> {
+        return machine.parent;
+      }
+    }
+
+    class ParentState extends HsmState<Event, BadInitMachine> {
+      public constructor(parent: TopState) {
+        super("parent", parent);
+      }
+
+      public override init(machine: BadInitMachine): HsmState<Event, BadInitMachine> {
+        return machine.sibling;
+      }
+    }
+
+    class ChildState extends HsmState<Event, BadInitMachine> {
+      public constructor(parent: ParentState) {
+        super("child", parent);
+      }
+    }
+
+    class SiblingState extends HsmState<Event, BadInitMachine> {
+      public constructor(parent: TopState) {
+        super("sibling", parent);
+      }
+    }
+
+    class BadInitMachine extends HsmMachine<Event, BadInitMachine> {
+      public readonly top: TopState;
+      public readonly parent: ParentState;
+      public readonly child: ChildState;
+      public readonly sibling: SiblingState;
+
+      public constructor() {
+        const top = new TopState();
+        super(top);
+
+        this.top = top;
+        this.parent = new ParentState(this.top);
+        this.child = new ChildState(this.parent);
+        this.sibling = new SiblingState(this.top);
+      }
+    }
+
+    const machine = new BadInitMachine();
+
+    expect(() => machine.start()).toThrowError(
+      "Init target 'sibling' must be a descendant of 'parent'.",
+    );
+  });
 });
