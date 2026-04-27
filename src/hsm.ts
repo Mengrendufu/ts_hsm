@@ -1,528 +1,343 @@
-export interface EventObject {
-  readonly type: string;
+export type SM_StatePtr<ActiveObject, Event> = SM_HsmState<ActiveObject, Event>;
+
+export type SM_ActionHandler<ActiveObject> = (me: ActiveObject) => void;
+
+export type SM_InitHandler<ActiveObject, Event> = (
+  me: ActiveObject,
+) => SM_StatePtr<ActiveObject, Event>;
+
+export type SM_StateHandler<ActiveObject, Event> = (
+  me: ActiveObject,
+  e: Event,
+) => SM_RetState<ActiveObject, Event>;
+
+export type SM_TopInitialHandler<ActiveObject, Event> = (
+  me: ActiveObject,
+) => SM_StatePtr<ActiveObject, Event>;
+
+export interface SM_HsmState<ActiveObject, Event> {
+  readonly name?: string;
+  readonly super_: SM_StatePtr<ActiveObject, Event> | null;
+  readonly init_?: SM_InitHandler<ActiveObject, Event> | null;
+  readonly entry_?: SM_ActionHandler<ActiveObject> | null;
+  readonly exit_?: SM_ActionHandler<ActiveObject> | null;
+  readonly handler_: SM_StateHandler<ActiveObject, Event>;
 }
 
-export interface HandledResult {
+export interface SM_HandledRet {
   readonly kind: "handled";
 }
 
-export interface SuperResult {
+export interface SM_SuperRet {
   readonly kind: "super";
 }
 
-export interface TransitionResult<
-  E extends EventObject,
-  M extends HsmMachine<E, M>,
-> {
-  readonly kind: "transition";
-  readonly target: HsmState<E, M>;
-  readonly source?: HsmState<E, M>;
+export interface SM_TranRet<ActiveObject, Event> {
+  readonly kind: "tran";
+  readonly target: SM_StatePtr<ActiveObject, Event>;
 }
 
-export type HandlerResult<
-  E extends EventObject,
-  M extends HsmMachine<E, M>,
-> = HandledResult | SuperResult | TransitionResult<E, M>;
+export type SM_RetState<ActiveObject, Event> =
+  | SM_HandledRet
+  | SM_SuperRet
+  | SM_TranRet<ActiveObject, Event>;
 
-const HANDLED_RESULT: HandledResult = { kind: "handled" };
-const SUPER_RESULT: SuperResult = { kind: "super" };
+const SM_HANDLED_RET: SM_HandledRet = { kind: "handled" };
+const SM_SUPER_RET: SM_SuperRet = { kind: "super" };
 
-export function handled<
-  E extends EventObject,
-  M extends HsmMachine<E, M>,
->(): HandlerResult<E, M> {
-  return HANDLED_RESULT;
+export const SM_RetState = {
+  Handled: SM_HANDLED_RET,
+  Super: SM_SUPER_RET,
+  Tran<ActiveObject, Event>(
+    target: SM_StatePtr<ActiveObject, Event>,
+  ): SM_RetState<ActiveObject, Event> {
+    return { kind: "tran", target };
+  },
+} as const;
+
+function SM_stateName<ActiveObject, Event>(
+  state: SM_StatePtr<ActiveObject, Event>,
+): string {
+  return state.name ?? "<anonymous>";
 }
 
-export function superState<
-  E extends EventObject,
-  M extends HsmMachine<E, M>,
->(): HandlerResult<E, M> {
-  return SUPER_RESULT;
-}
+class SM_PathOps {
+  public static collectToTop<ActiveObject, Event>(
+    target: SM_StatePtr<ActiveObject, Event>,
+    maxDepth: number,
+  ): SM_StatePtr<ActiveObject, Event>[] {
+    const path: SM_StatePtr<ActiveObject, Event>[] = [];
+    const seen = new Set<SM_StatePtr<ActiveObject, Event>>();
+    let cursor: SM_StatePtr<ActiveObject, Event> | null = target;
 
-export function transition<
-  E extends EventObject,
-  M extends HsmMachine<E, M>,
->(
-  target: HsmState<E, M>,
-  source?: HsmState<E, M>,
-): TransitionResult<E, M> {
-  if (source === undefined) {
-    return { kind: "transition", target };
-  }
-
-  return { kind: "transition", target, source };
-}
-
-export type DispatchStatus = "handled" | "transition" | "unhandled";
-
-export abstract class HsmState<
-  E extends EventObject,
-  M extends HsmMachine<E, M>,
-> {
-  public readonly id: string;
-  public readonly parent: HsmState<E, M> | null;
-
-  protected constructor(id: string, parent: HsmState<E, M> | null) {
-    this.id = id;
-    this.parent = parent;
-  }
-
-  public entry(_machine: M): void {}
-
-  public exit(_machine: M): void {}
-
-  public init(_machine: M): HsmState<E, M> | null {
-    return null;
-  }
-
-  public handle(_machine: M, _event: E): HandlerResult<E, M> {
-    return superState();
-  }
-}
-
-export abstract class HsmMachine<
-  E extends EventObject,
-  M extends HsmMachine<E, M>,
-> {
-  private readonly topStateNode: HsmState<E, M>;
-  private readonly activePathNodes: HsmState<E, M>[] = [];
-  private started = false;
-
-  protected constructor(topState: HsmState<E, M>) {
-    if (topState.parent !== null) {
-      throw new Error(`Top state '${topState.id}' must not have a parent.`);
-    }
-
-    this.topStateNode = topState;
-    this.activePathNodes.push(topState);
-  }
-
-  public get topState(): HsmState<E, M> {
-    return this.topStateNode;
-  }
-
-  public get currentState(): HsmState<E, M> {
-    const leaf = this.activeLeafOrNull();
-    if (leaf === null) {
-      throw new Error("Active path is unexpectedly empty.");
-    }
-
-    return leaf;
-  }
-
-  public get activePath(): readonly HsmState<E, M>[] {
-    return [...this.activePathNodes];
-  }
-
-  public get isStarted(): boolean {
-    return this.started;
-  }
-
-  public isStateActive(state: HsmState<E, M>): boolean {
-    return this.isActive(state);
-  }
-
-  public start(): void {
-    if (this.started) {
-      throw new Error("State machine has already been started.");
-    }
-
-    this.started = true;
-    this.activePathNodes.length = 0;
-    this.activePathNodes.push(this.topStateNode);
-
-    try {
-      this.runInitDescentFrom(this.topStateNode);
-    } catch (error) {
-      this.started = false;
-      this.activePathNodes.length = 0;
-      this.activePathNodes.push(this.topStateNode);
-      throw error;
-    }
-  }
-
-  public dispatch(event: E): DispatchStatus {
-    if (!this.started) {
-      throw new Error("State machine must be started before dispatch.");
-    }
-
-    return this.dispatchFrame(event);
-  }
-
-  private dispatchFrame(event: E): DispatchStatus {
-    let probe = this.currentState;
-
-    while (true) {
-      const handlerState = this.resolveActiveProbe(probe);
-      if (handlerState === null) {
-        return "unhandled";
-      }
-
-      const result = handlerState.handle(this.machine(), event);
-
-      if (result.kind === "handled") {
-        return "handled";
-      }
-
-      if (result.kind === "transition") {
-        const source = result.source ?? handlerState;
-        this.performTransition(source, result.target);
-        return "transition";
-      }
-
-      const nextProbe = this.nextSuperProbe(handlerState);
-      if (nextProbe === null) {
-        return "unhandled";
-      }
-
-      probe = nextProbe;
-    }
-  }
-
-  private performTransition(source: HsmState<E, M>, target: HsmState<E, M>): void {
-    this.ensureInTree(source, "source");
-    this.ensureInTree(target, "target");
-
-    if (!this.isActive(source)) {
-      throw new Error(
-        `Transition source '${source.id}' is not active for current leaf '${this.currentState.id}'.`,
-      );
-    }
-
-    this.exitDescendantsOf(source);
-
-    if (!this.isActive(source)) {
-      return;
-    }
-
-    if (source === target) {
-      if (source.parent === null) {
-        throw new Error("Top-state self-transition is not supported.");
-      }
-
-      if (this.currentState !== source) {
-        return;
-      }
-
-      this.exitState(source);
-
-      if (!this.canEnterState(source)) {
-        return;
-      }
-
-      this.enterState(source);
-
-      if (this.isActive(source)) {
-        this.runInitDescentFrom(source);
-      }
-
-      return;
-    }
-
-    const lca = this.findLeastCommonAncestor(source, target);
-    this.exitPathFromSourceToAncestor(source, lca);
-
-    if (!this.isActive(lca)) {
-      return;
-    }
-
-    this.enterPathFromAncestorToTarget(lca, target);
-
-    if (this.isActive(target)) {
-      this.runInitDescentFrom(target);
-    }
-  }
-
-  private runInitDescentFrom(composite: HsmState<E, M>): void {
-    let scan = composite;
-
-    while (true) {
-      if (!this.isActive(scan)) {
-        return;
-      }
-
-      if (this.currentState !== scan) {
-        return;
-      }
-
-      const target = scan.init(this.machine());
-
-      if (!this.isActive(scan)) {
-        return;
-      }
-
-      if (this.currentState !== scan) {
-        return;
-      }
-
-      if (target === null) {
-        return;
-      }
-
-      this.ensureInTree(target, "init target");
-
-      if (!this.isAncestorOf(scan, target)) {
+    while (cursor !== null) {
+      if (seen.has(cursor)) {
         throw new Error(
-          `Init target '${target.id}' must be a descendant of '${scan.id}'.`,
+          `State '${SM_stateName(target)}' has a cyclic super_ chain.`,
         );
       }
 
-      const entryPath = this.pathFromAncestorToDescendant(scan, target);
-
-      for (const state of entryPath) {
-        if (!this.canEnterState(state)) {
-          return;
-        }
-
-        this.enterState(state);
-
-        if (!this.isActive(state)) {
-          return;
-        }
-
-        if (this.currentState !== state) {
-          return;
-        }
-      }
-
-      scan = target;
-    }
-  }
-
-  private exitDescendantsOf(source: HsmState<E, M>): void {
-    while (this.isActive(source)) {
-      const leaf = this.currentState;
-      if (leaf === source) {
-        return;
-      }
-
-      this.exitState(leaf);
-    }
-  }
-
-  private exitPathFromSourceToAncestor(
-    source: HsmState<E, M>,
-    ancestor: HsmState<E, M>,
-  ): void {
-    const exitStates = this.pathFromDescendantToAncestor(source, ancestor);
-
-    for (const state of exitStates) {
-      if (!this.isActive(state)) {
-        return;
-      }
-
-      this.exitDescendantsOf(state);
-
-      if (!this.isActive(state)) {
-        return;
-      }
-
-      if (this.currentState !== state) {
-        return;
-      }
-
-      this.exitState(state);
-    }
-  }
-
-  private enterPathFromAncestorToTarget(
-    ancestor: HsmState<E, M>,
-    target: HsmState<E, M>,
-  ): void {
-    const entryStates = this.pathFromAncestorToDescendant(ancestor, target);
-
-    for (const state of entryStates) {
-      if (!this.canEnterState(state)) {
-        return;
-      }
-
-      this.enterState(state);
-
-      if (!this.isActive(state)) {
-        return;
-      }
-
-      if (this.currentState !== state) {
-        return;
-      }
-    }
-  }
-
-  private findLeastCommonAncestor(
-    left: HsmState<E, M>,
-    right: HsmState<E, M>,
-  ): HsmState<E, M> {
-    const leftAncestors = new Set<HsmState<E, M>>();
-    let scan: HsmState<E, M> | null = left;
-
-    while (scan !== null) {
-      leftAncestors.add(scan);
-      scan = scan.parent;
-    }
-
-    scan = right;
-
-    while (scan !== null) {
-      if (leftAncestors.has(scan)) {
-        return scan;
-      }
-
-      scan = scan.parent;
-    }
-
-    throw new Error(
-      `No least common ancestor exists between '${left.id}' and '${right.id}'.`,
-    );
-  }
-
-  private pathFromDescendantToAncestor(
-    descendant: HsmState<E, M>,
-    ancestor: HsmState<E, M>,
-  ): HsmState<E, M>[] {
-    const path: HsmState<E, M>[] = [];
-    let scan: HsmState<E, M> | null = descendant;
-
-    while (scan !== ancestor) {
-      path.push(scan);
-      scan = scan.parent;
-
-      if (scan === null) {
+      if (path.length >= maxDepth) {
         throw new Error(
-          `State '${ancestor.id}' is not an ancestor of '${descendant.id}'.`,
+          `State path from '${SM_stateName(target)}' exceeds max depth ${maxDepth}.`,
         );
       }
+
+      seen.add(cursor);
+      path.push(cursor);
+      cursor = cursor.super_;
     }
 
     return path;
   }
 
-  private pathFromAncestorToDescendant(
-    ancestor: HsmState<E, M>,
-    descendant: HsmState<E, M>,
-  ): HsmState<E, M>[] {
-    const reversePath: HsmState<E, M>[] = [];
-    let scan: HsmState<E, M> | null = descendant;
+  public static collectUntilCurr<ActiveObject, Event>(
+    curr: SM_StatePtr<ActiveObject, Event>,
+    target: SM_StatePtr<ActiveObject, Event>,
+    maxDepth: number,
+  ): SM_StatePtr<ActiveObject, Event>[] {
+    const path: SM_StatePtr<ActiveObject, Event>[] = [];
+    const seen = new Set<SM_StatePtr<ActiveObject, Event>>();
+    let cursor: SM_StatePtr<ActiveObject, Event> | null = target;
 
-    while (scan !== ancestor) {
-      reversePath.push(scan);
-      scan = scan.parent;
+    while (cursor !== null) {
+      if (cursor === curr) {
+        return path;
+      }
 
-      if (scan === null) {
+      if (seen.has(cursor)) {
         throw new Error(
-          `State '${descendant.id}' is not a descendant of '${ancestor.id}'.`,
+          `State '${SM_stateName(target)}' has a cyclic super_ chain.`,
         );
       }
+
+      if (path.length >= maxDepth) {
+        throw new Error(
+          `State path from '${SM_stateName(target)}' exceeds max depth ${maxDepth}.`,
+        );
+      }
+
+      seen.add(cursor);
+      path.push(cursor);
+      cursor = cursor.super_;
     }
 
-    reversePath.reverse();
-    return reversePath;
+    throw new Error(
+      `Init target '${SM_stateName(target)}' must be a descendant of current state '${SM_stateName(
+        curr,
+      )}'.`,
+    );
   }
 
-  private resolveActiveProbe(probe: HsmState<E, M>): HsmState<E, M> | null {
-    if (this.isActive(probe)) {
-      return probe;
+  public static slot<ActiveObject, Event>(
+    path: readonly SM_StatePtr<ActiveObject, Event>[],
+    idx: number,
+  ): SM_StatePtr<ActiveObject, Event> {
+    const state = path[idx];
+    if (state === undefined) {
+      throw new Error(`State path slot ${idx} is unexpectedly empty.`);
     }
 
-    return this.activeLeafOrNull();
+    return state;
+  }
+}
+
+export class SM_Hsm<ActiveObject, Event> {
+  private curr_: SM_StatePtr<ActiveObject, Event> | null = null;
+
+  public constructor(
+    private readonly topInitial: SM_TopInitialHandler<ActiveObject, Event>,
+    private readonly maxNestDepth = 5,
+  ) {
+    if (!Number.isInteger(maxNestDepth) || maxNestDepth <= 0) {
+      throw new Error("maxNestDepth must be a positive integer.");
+    }
   }
 
-  private nextSuperProbe(invokedState: HsmState<E, M>): HsmState<E, M> | null {
-    if (this.isActive(invokedState)) {
-      return invokedState.parent;
-    }
-
-    const leaf = this.activeLeafOrNull();
-    if (leaf === null) {
-      return null;
-    }
-
-    return leaf.parent;
+  public curr(): SM_StatePtr<ActiveObject, Event> | null {
+    return this.curr_;
   }
 
-  private ensureInTree(state: HsmState<E, M>, label: string): void {
-    let scan: HsmState<E, M> | null = state;
+  public init(me: ActiveObject): void {
+    const target = this.topInitial(me);
+    const path = SM_PathOps.collectToTop(target, this.maxNestDepth);
 
-    while (scan !== null) {
-      if (scan === this.topStateNode) {
+    this.enterPrimaryPath(me, path);
+    this.curr_ = target;
+    this.followInitChain(me);
+  }
+
+  public dispatch(me: ActiveObject, e: Event): void {
+    let state = this.requireInitialized();
+
+    while (true) {
+      const result = state.handler_(me, e);
+
+      switch (result.kind) {
+        case "handled":
+          return;
+        case "super":
+          if (state.super_ === null) {
+            return;
+          }
+
+          state = state.super_;
+          break;
+        case "tran":
+          this.transitionFromActive(me, state, result.target, this.requireInitialized());
+          return;
+        default:
+          throw new Error("State handler returned an unknown result.");
+      }
+    }
+  }
+
+  public transition(
+    me: ActiveObject,
+    source: SM_StatePtr<ActiveObject, Event>,
+    target: SM_StatePtr<ActiveObject, Event>,
+  ): void {
+    const curr = this.requireInitialized();
+    this.requireSourceOnActivePath(curr, source);
+    this.transitionFromActive(me, source, target, curr);
+  }
+
+  private transitionFromActive(
+    me: ActiveObject,
+    source: SM_StatePtr<ActiveObject, Event>,
+    target: SM_StatePtr<ActiveObject, Event>,
+    curr: SM_StatePtr<ActiveObject, Event>,
+  ): void {
+    const path = SM_PathOps.collectToTop(target, this.maxNestDepth);
+
+    let pathIndex = 0;
+    let reachedSource = false;
+    let lcaFound = false;
+    let state: SM_StatePtr<ActiveObject, Event> | null = curr;
+    const seen = new Set<SM_StatePtr<ActiveObject, Event>>();
+
+    while (state !== null) {
+      if (seen.has(state)) {
+        throw new Error(
+          `Current state '${SM_stateName(curr)}' has a cyclic super_ chain.`,
+        );
+      }
+
+      seen.add(state);
+
+      if (state === source) {
+        reachedSource = true;
+      }
+
+      if (reachedSource && !(state === source && target === source)) {
+        for (let idx = 0; idx < path.length; idx += 1) {
+          if (state === SM_PathOps.slot(path, idx)) {
+            lcaFound = true;
+            pathIndex = idx;
+            break;
+          }
+        }
+      }
+
+      if (lcaFound) {
+        break;
+      }
+
+      state.exit_?.(me);
+
+      if (state.super_ !== null) {
+        state = state.super_;
+        continue;
+      }
+
+      if (reachedSource) {
+        pathIndex = path.length;
+        break;
+      }
+
+      throw new Error(
+        `Transition source '${SM_stateName(source)}' is not active for current state '${SM_stateName(
+          curr,
+        )}'.`,
+      );
+    }
+
+    while (pathIndex > 0) {
+      pathIndex -= 1;
+      SM_PathOps.slot(path, pathIndex).entry_?.(me);
+    }
+
+    this.curr_ = target;
+    this.followInitChain(me);
+  }
+
+  private requireSourceOnActivePath(
+    curr: SM_StatePtr<ActiveObject, Event>,
+    source: SM_StatePtr<ActiveObject, Event>,
+  ): void {
+    const seen = new Set<SM_StatePtr<ActiveObject, Event>>();
+    let state: SM_StatePtr<ActiveObject, Event> | null = curr;
+
+    while (state !== null) {
+      if (state === source) {
         return;
       }
 
-      scan = scan.parent;
-    }
-
-    throw new Error(`The ${label} state '${state.id}' is not in this machine tree.`);
-  }
-
-  private isAncestorOf(ancestor: HsmState<E, M>, candidate: HsmState<E, M>): boolean {
-    let scan: HsmState<E, M> | null = candidate;
-
-    while (scan !== null) {
-      if (scan === ancestor) {
-        return true;
+      if (seen.has(state)) {
+        throw new Error(
+          `Current state '${SM_stateName(curr)}' has a cyclic super_ chain.`,
+        );
       }
 
-      scan = scan.parent;
+      seen.add(state);
+      state = state.super_;
     }
 
-    return false;
+    throw new Error(
+      `Transition source '${SM_stateName(source)}' is not active for current state '${SM_stateName(
+        curr,
+      )}'.`,
+    );
   }
 
-  private isActive(state: HsmState<E, M>): boolean {
-    return this.activePathNodes.includes(state);
+  private followInitChain(me: ActiveObject): void {
+    while (true) {
+      const curr = this.requireInitialized();
+      const init_ = curr.init_ ?? null;
+
+      if (init_ === null) {
+        return;
+      }
+
+      const target = init_(me);
+      const path = SM_PathOps.collectUntilCurr(curr, target, this.maxNestDepth);
+
+      let idx = path.length;
+      while (idx > 0) {
+        idx -= 1;
+        const state = SM_PathOps.slot(path, idx);
+        this.curr_ = state;
+        state.entry_?.(me);
+      }
+    }
   }
 
-  private canEnterState(state: HsmState<E, M>): boolean {
-    const parent = state.parent;
-    if (parent === null) {
-      return false;
+  private enterPrimaryPath(
+    me: ActiveObject,
+    path: readonly SM_StatePtr<ActiveObject, Event>[],
+  ): void {
+    let idx = path.length;
+    while (idx > 0) {
+      idx -= 1;
+      SM_PathOps.slot(path, idx).entry_?.(me);
     }
-
-    if (!this.isActive(parent)) {
-      return false;
-    }
-
-    return this.currentState === parent;
   }
 
-  private enterState(state: HsmState<E, M>): void {
-    const parent = state.parent;
-    if (parent === null) {
-      throw new Error(`Cannot enter top state '${state.id}'.`);
+  private requireInitialized(): SM_StatePtr<ActiveObject, Event> {
+    if (this.curr_ === null) {
+      throw new Error("State machine is not initialized.");
     }
 
-    if (this.currentState !== parent) {
-      throw new Error(
-        `Cannot enter '${state.id}' because its parent '${parent.id}' is not the active leaf.`,
-      );
-    }
-
-    this.activePathNodes.push(state);
-    state.entry(this.machine());
-  }
-
-  private exitState(state: HsmState<E, M>): void {
-    if (this.currentState !== state) {
-      throw new Error(
-        `Cannot exit '${state.id}' because it is not the active leaf ('${this.currentState.id}').`,
-      );
-    }
-
-    this.activePathNodes.pop();
-    state.exit(this.machine());
-  }
-
-  private activeLeafOrNull(): HsmState<E, M> | null {
-    const leaf = this.activePathNodes[this.activePathNodes.length - 1];
-    if (leaf === undefined) {
-      return null;
-    }
-
-    return leaf;
-  }
-
-  private machine(): M {
-    return this as unknown as M;
+    return this.curr_;
   }
 }

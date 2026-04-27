@@ -1,203 +1,94 @@
 # ts_hsm
 
-`ts_hsm` is a class-based hierarchical state machine for TypeScript. States are classes, machines are classes, and the public helpers build the handler results used by the runtime.
+`ts_hsm` is a descriptor-based hierarchical state machine runtime for TypeScript. Its structure mirrors `rs_hsm_`: states are static descriptor objects, hierarchy is expressed through `super_` state pointers, and handlers return `SM_RetState` values.
 
-Import from the package root:
+## Import
 
 ```ts
 import {
-  handled,
-  HsmMachine,
-  HsmState,
-  superState,
-  transition,
-  type DispatchStatus,
-  type EventObject,
-  type HandledResult,
-  type HandlerResult,
-  type SuperResult,
-  type TransitionResult,
+  SM_Hsm,
+  SM_RetState,
+  type SM_HsmState,
+  type SM_StatePtr,
 } from "ts_hsm";
 ```
 
 ## Public API
 
-### `EventObject`
+- `SM_Hsm<ActiveObject, Event>` owns the current state pointer.
+- `SM_HsmState<ActiveObject, Event>` describes one state table row.
+- `SM_StatePtr<ActiveObject, Event>` is a state descriptor reference.
+- `SM_RetState.Handled` marks an event handled.
+- `SM_RetState.Super` bubbles to `super_`.
+- `SM_RetState.Tran(target)` requests a transition.
 
-The minimal event shape is:
-
-```ts
-interface EventObject {
-  readonly type: string;
-}
-```
-
-Every event must have a string `type`.
-
-### `HsmState<E, M>`
-
-Base class for states. Subclasses provide the hierarchy and behavior.
-
-- `id`, a string identifier
-- `parent`, another state or `null` for the top state
-- `entry(machine)`
-- `exit(machine)`
-- `init(machine)`, returns the initial child state or `null`
-- `handle(machine, event)`, returns a handler result
-
-### `HsmMachine<E, M>`
-
-Base class for the machine instance.
-
-- `topState`
-- `currentState`
-- `activePath`
-- `isStarted`
-- `isStateActive(state)`
-- `start()`
-- `dispatch(event)`
-
-### Handler helpers and result types
-
-- `handled()` returns a handled result
-- `superState()` asks the runtime to bubble to the parent state
-- `transition(target, source?)` requests a transition
-- `DispatchStatus` is `"handled" | "transition" | "unhandled"`
-- `HandlerResult`, `HandledResult`, `SuperResult`, `TransitionResult` are the exported result types used by `handle()`
-
-## Class-based usage
-
-The machine owns concrete state instances and wires them together through inheritance.
+## State Descriptor
 
 ```ts
-type AppEvent =
-  | { readonly type: "GO" }
-  | { readonly type: "STOP" };
-
-class TopState extends HsmState<AppEvent, AppMachine> {
-  constructor() {
-    super("top", null);
-  }
-
-  override init(machine: AppMachine): HsmState<AppEvent, AppMachine> {
-    return machine.idle;
-  }
-}
-
-class IdleState extends HsmState<AppEvent, AppMachine> {
-  constructor(parent: TopState) {
-    super("idle", parent);
-  }
-
-  override handle(machine: AppMachine, event: AppEvent) {
-    if (event.type === "GO") {
-      return transition(machine.active);
-    }
-
-    return superState();
-  }
-}
-
-class ActiveState extends HsmState<AppEvent, AppMachine> {
-  constructor(parent: TopState) {
-    super("active", parent);
-  }
-
-  override handle(machine: AppMachine, event: AppEvent) {
-    if (event.type === "STOP") {
-      return transition(machine.idle);
-    }
-
-    return handled();
-  }
-}
-
-class AppMachine extends HsmMachine<AppEvent, AppMachine> {
-  readonly top: TopState;
-  readonly idle: IdleState;
-  readonly active: ActiveState;
-
-  constructor() {
-    const top = new TopState();
-    super(top);
-
-    this.top = top;
-    this.idle = new IdleState(this.top);
-    this.active = new ActiveState(this.top);
-  }
-}
-
-const machine = new AppMachine();
-machine.start();
-machine.dispatch({ type: "GO" });
+const state: SM_HsmState<App, AppEvent> = {
+  name: "state",
+  super_: parentState,
+  init_: null,
+  entry_: (me) => me.trace("state-ENTRY."),
+  exit_: (me) => me.trace("state-EXIT."),
+  handler_: (me, event) => SM_RetState.Super,
+};
 ```
 
-## Semantics
+The field names intentionally match the Rust version:
 
-The runtime supports synchronous reentrancy on the same instance. A handler, entry method, or exit method may call `dispatch()` on that same machine before the outer call returns.
+- `super_`: parent state pointer, or `null` for the root state.
+- `init_`: optional initial transition function.
+- `entry_`: optional entry action.
+- `exit_`: optional exit action.
+- `handler_`: event handler function.
 
-That is not classic single-instance, non-reentrant RTC semantics. Treat each HSM instance as owned by one executor at a time. Multiple instances can run independently. If you share mutable state outside the HSM, you still need external synchronization.
-
-## Standard reuse flow
-
-If you want to vendor this package into another Git repository, keep it as a private local package and import from the package root instead of from `src/`.
-
-Recommended layout:
-
-```text
-your_repo/
-├─ src/
-├─ package.json
-└─ 3rd_party/
-   └─ ts_hsm/
-```
-
-Build the vendored package first:
-
-```bash
-cd 3rd_party/ts_hsm
-npm install
-npm run build
-```
-
-Then declare it as a local dependency in the host project's `package.json`:
-
-```json
-{
-  "dependencies": {
-    "ts_hsm": "file:./3rd_party/ts_hsm"
-  }
-}
-```
-
-Install dependencies from the host project root:
-
-```bash
-cd your_repo
-npm install
-```
-
-After that, use the package by name:
+## Machine Usage
 
 ```ts
-import {
-  HsmMachine,
-  HsmState,
-  handled,
-  superState,
-  transition,
-  type EventObject,
-} from "ts_hsm";
+type AppEvent = { readonly sig: "GO" | "STOP" };
+
+class App {
+  private readonly sm_hsm_ = new SM_Hsm<App, AppEvent>(App_TOP_initial, 5);
+
+  public constructor() {
+    this.sm_hsm_.init(this);
+  }
+
+  public dispatch(event: AppEvent): void {
+    this.sm_hsm_.dispatch(this, event);
+  }
+}
+
+function App_TOP_initial(_me: App): SM_StatePtr<App, AppEvent> {
+  return App_idle;
+}
+
+const App_root: SM_HsmState<App, AppEvent> = {
+  name: "root",
+  super_: null,
+  init_: null,
+  handler_: () => SM_RetState.Super,
+};
+
+const App_idle: SM_HsmState<App, AppEvent> = {
+  name: "idle",
+  super_: App_root,
+  init_: null,
+  handler_: (_me, event) =>
+    event.sig === "GO" ? SM_RetState.Tran(App_active) : SM_RetState.Super,
+};
+
+const App_active: SM_HsmState<App, AppEvent> = {
+  name: "active",
+  super_: App_root,
+  init_: null,
+  handler_: (_me, event) =>
+    event.sig === "STOP" ? SM_RetState.Tran(App_idle) : SM_RetState.Super,
+};
 ```
 
-If you update `3rd_party/ts_hsm`, rebuild it before rebuilding the host project:
-
-```bash
-cd 3rd_party/ts_hsm
-npm run build
-```
-
-Avoid importing from `3rd_party/ts_hsm/src` as a long-term integration boundary. The supported package boundary is the package root, which resolves to `dist/`.
+See `examples/hsmtst.ts` for the full Rust-aligned fixture style.
 
 ## Commands
 
